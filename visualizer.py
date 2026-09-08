@@ -1,10 +1,11 @@
+import os
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-import matplotlib.pyplot as plt
 import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
 from PIL import Image, ImageTk
 
 ROOT = Path(__file__).resolve().parent
@@ -32,6 +33,7 @@ class Visualizer:
         self.make_content()
         window.bind("<Left>", lambda _: self.move(-1))
         window.bind("<Right>", lambda _: self.move(1))
+        window.protocol("WM_DELETE_WINDOW", self.close)
         self.refresh()
 
     def make_controls(self):
@@ -79,7 +81,8 @@ class Visualizer:
             box.bind("<<ComboboxSelected>>", lambda _: self.show_graph())
             box.bind("<Return>", lambda _: self.show_graph())
 
-        self.figure, self.axes = plt.subplots(figsize=(6, 6), layout="constrained")
+        self.figure = Figure(figsize=(6, 6), layout="constrained")
+        self.axes = self.figure.add_subplot()
         self.canvas = FigureCanvasTkAgg(self.figure, master=graph_frame)
         self.canvas.get_tk_widget().pack(fill="both", expand=True)
 
@@ -139,6 +142,12 @@ class Visualizer:
             index = 0
         self.x_name.set(self.columns[min(max(index + amount, 0), len(self.columns) - 1)])
         self.show_graph()
+
+    def close(self):
+        self.figure.clear()
+        self.window.quit()
+        self.window.destroy()
+        os._exit(0)
 
 
 def main():
