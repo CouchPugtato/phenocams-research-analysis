@@ -1,4 +1,5 @@
 import gc
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -6,15 +7,23 @@ import pandas as pd
 import torch
 from PIL import Image, ImageDraw
 
-SAM_VERSION = "sam3.1"
 DEPTH_MODEL = "depth-anything/Depth-Anything-V2-Large-hf"
 DINO_MODEL = "facebook/dinov3-vith16plus-pretrain-lvd1689m"
+
 INPUT_CSV = Path("data/dataset.csv")
 OUTPUT_CSV = Path("data/model_dataset.csv")
 IMAGE_OUTPUT = Path("data/model_outputs")
-SAM_PROMPTS = ["river", "snow", "vegetation", "sky", "ground"]
+
+SAM_PROMPTS = ["river", "snow", "vegetation", "ground"]
 SAM_CONFIDENCE = 0.2
 COLORS = [(0, 130, 255), (255, 80, 200), (0, 220, 80), (255, 210, 0), (255, 80, 50)]
+
+warnings.filterwarnings(
+    "ignore",
+    message="Importing from timm.models.layers is deprecated.*",
+    category=FutureWarning,
+)
+CONSENSUS_MASK_THRESHOLD = 5
 
 
 def images(table):
@@ -36,17 +45,13 @@ def release(model):
 def add_sam3(table, prompts, device, folder):
     try:
         from sam3.model.sam3_image_processor import Sam3Processor
-        from sam3.model_builder import build_sam3_image_model, download_ckpt_from_hf
+        from sam3.model_builder import build_sam3_image_model
     except ImportError as error:
         raise SystemExit("SAM 3 is not installed") from error
 
-    checkpoint = download_ckpt_from_hf(version=SAM_VERSION)
-    model = build_sam3_image_model(
-        device=device, checkpoint_path=checkpoint, load_from_HF=False
-    )
+    model = build_sam3_image_model(device=device)
     processor = Sam3Processor(model, confidence_threshold=SAM_CONFIDENCE)
-    results = {f"sam_{key}_count": [] for _, key in prompts}
-    results |= {f"sam_{key}_coverage": [] for _, key in prompts}
+    results = {f"sam_{key}_coverage": [] for _, key in prompts}
     results |= {f"sam_{key}_score": [] for _, key in prompts}
     results["sam_image"] = []
     results["sam_river_mask"] = []
@@ -67,7 +72,6 @@ def add_sam3(table, prompts, device, folder):
                 overlay[mask] = (.55 * overlay[mask] + .45 * color).astype(np.uint8)
                 if key == "river":
                     river_mask = mask
-                results[f"sam_{key}_count"].append(len(masks))
                 results[f"sam_{key}_coverage"].append(coverage)
                 results[f"sam_{key}_score"].append(scores.float().mean().item() if len(scores) else 0)
 
@@ -90,7 +94,7 @@ def add_sam3(table, prompts, device, folder):
     release(model)
     if len({mask.shape for mask in river_masks}) != 1:
         raise ValueError("All images must have the same dimensions to combine their river masks")
-    combined_river = np.sum(river_masks, axis=0) >= 3
+    combined_river = np.sum(river_masks, axis=0) >= CONSENSUS_MASK_THRESHOLD
     combined_path = folder / "all_images_river_mask.png"
     Image.fromarray((combined_river * 255).astype(np.uint8)).save(combined_path)
     results["sam_combined_river_mask"] = [str(combined_path)] * len(table)
@@ -158,13 +162,16 @@ def add_depth(table, device, folder):
         row |= depth_stats(aligned[mask], "depth_river")
         row |= {
             "depth_fixed_river_median": np.median(aligned[mask]),
-            "depth_change_from_reference": np.median(aligned[mask] - reference[mask]),
             "depth_alignment_scale": scale,
             "depth_alignment_shift": shift,
             "depth_image": image_path,
             "depth_river_image": river_image_path,
         }
         rows.append(row)
+    medians = [row["depth_river_median"] for row in rows if np.isfinite(row["depth_river_median"])]
+    average_median = np.mean(medians) if medians else np.nan
+    for row in rows:
+        row["depth_change_from_average"] = row["depth_river_median"] - average_median
     return table.join(pd.DataFrame(rows, index=table.index))
 
 
