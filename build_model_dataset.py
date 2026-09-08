@@ -49,10 +49,13 @@ def add_sam3(table, prompts, device, folder):
     results |= {f"sam_{key}_coverage": [] for _, key in prompts}
     results |= {f"sam_{key}_score": [] for _, key in prompts}
     results["sam_image"] = []
+    results["sam_river_mask"] = []
+    river_masks = []
     folder.mkdir(parents=True, exist_ok=True)
 
     for number, (source, image) in enumerate(images(table), 1):
         overlay = np.asarray(image.convert("L").convert("RGB")).copy()
+        river_mask = np.zeros((image.height, image.width), bool)
         with torch.autocast(device_type=device, dtype=torch.bfloat16, enabled=device == "cuda"):
             state = processor.set_image(image)
             for prompt_number, (prompt, key) in enumerate(prompts):
@@ -62,6 +65,8 @@ def add_sam3(table, prompts, device, folder):
                 mask = masks.bool().any(dim=0).squeeze().cpu().numpy() if len(masks) else np.zeros((image.height, image.width), bool)
                 color = np.array(COLORS[prompt_number % len(COLORS)])
                 overlay[mask] = (.55 * overlay[mask] + .45 * color).astype(np.uint8)
+                if key == "river":
+                    river_mask = mask
                 results[f"sam_{key}_count"].append(len(masks))
                 results[f"sam_{key}_coverage"].append(coverage)
                 results[f"sam_{key}_score"].append(scores.float().mean().item() if len(scores) else 0)
@@ -75,11 +80,43 @@ def add_sam3(table, prompts, device, folder):
             draw.text((32, y - 2), prompt, fill="white")
         output_path = folder / f"{source.stem}_segments.jpg"
         combined.save(output_path, quality=90)
+        mask_path = folder / f"{source.stem}_river_mask.png"
+        Image.fromarray((river_mask * 255).astype(np.uint8)).save(mask_path)
+        river_masks.append(river_mask)
         results["sam_image"].append(str(output_path))
+        results["sam_river_mask"].append(str(mask_path))
         print(f"SAM 3: {number}/{len(table)}")
 
     release(model)
+    if len({mask.shape for mask in river_masks}) != 1:
+        raise ValueError("All images must have the same dimensions to combine their river masks")
+    combined_river = np.sum(river_masks, axis=0) > 0
+    combined_path = folder / "all_images_river_mask.png"
+    Image.fromarray((combined_river * 255).astype(np.uint8)).save(combined_path)
+    results["sam_combined_river_mask"] = [str(combined_path)] * len(table)
     return table.assign(**results)
+
+
+def depth_stats(values, prefix):
+    if not values.size:
+        return {f"{prefix}_{name}": np.nan for name in ("mean", "std", "p10", "median", "p90")}
+    q10, median, q90 = np.quantile(values, [.1, .5, .9])
+    return {
+        f"{prefix}_mean": values.mean(), f"{prefix}_std": values.std(),
+        f"{prefix}_p10": q10, f"{prefix}_median": median, f"{prefix}_p90": q90,
+    }
+
+
+def align_depth(values, reference, excluded):
+    stable = ~excluded[::8, ::8]
+    current, target = values[::8, ::8][stable], reference[::8, ::8][stable]
+    if current.size < 100:
+        return values, 1.0, 0.0
+    current_q = np.quantile(current, [.25, .5, .75])
+    target_q = np.quantile(target, [.25, .5, .75])
+    scale = (target_q[2] - target_q[0]) / max(current_q[2] - current_q[0], 1e-8)
+    shift = target_q[1] - scale * current_q[1]
+    return scale * values + shift, scale, shift
 
 
 def add_depth(table, device, folder):
@@ -87,8 +124,9 @@ def add_depth(table, device, folder):
 
     processor = AutoImageProcessor.from_pretrained(DEPTH_MODEL)
     model = AutoModelForDepthEstimation.from_pretrained(DEPTH_MODEL).to(device).eval()
-    rows = []
+    depth_maps, masks, image_paths, river_image_paths = [], [], [], []
     folder.mkdir(parents=True, exist_ok=True)
+    mask_file = table["sam_combined_river_mask"].iloc[0]
     for number, (source, image) in enumerate(images(table), 1):
         inputs = processor(images=image, return_tensors="pt").to(device)
         with torch.inference_mode():
@@ -96,18 +134,38 @@ def add_depth(table, device, folder):
             depth = processor.post_process_depth_estimation(
                 output, target_sizes=[(image.height, image.width)]
             )[0]["predicted_depth"].float()
-        flat = depth.flatten()
-        q10, median, q90 = torch.quantile(flat, torch.tensor([.1, .5, .9], device=device))
         values = depth.cpu().numpy()
+        with Image.open(mask_file) as mask_image:
+            mask = np.asarray(mask_image.convert("L").resize(image.size, Image.Resampling.NEAREST)) > 0
         gray = ((values - values.min()) / max(np.ptp(values), 1e-8) * 255).astype(np.uint8)
         output_path = folder / f"{source.stem}_depth.png"
+        river_output_path = folder / f"{source.stem}_depth_river.png"
         Image.fromarray(gray).save(output_path)
-        rows.append((flat.mean().item(), flat.std().item(), q10.item(), median.item(), q90.item(), str(output_path)))
+        Image.fromarray(np.where(mask, gray, 0).astype(np.uint8)).save(river_output_path)
+        depth_maps.append(values)
+        masks.append(mask)
+        image_paths.append(str(output_path))
+        river_image_paths.append(str(river_output_path))
         print(f"Depth Anything: {number}/{len(table)}")
 
     release(model)
-    columns = ["depth_mean", "depth_std", "depth_p10", "depth_median", "depth_p90", "depth_image"]
-    return table.join(pd.DataFrame(rows, columns=columns, index=table.index))
+    reference = depth_maps[0]
+
+    rows = []
+    for values, mask, image_path, river_image_path in zip(depth_maps, masks, image_paths, river_image_paths):
+        aligned, scale, shift = align_depth(values, reference, mask)
+        row = depth_stats(values.ravel(), "depth")
+        row |= depth_stats(aligned[mask], "depth_river")
+        row |= {
+            "depth_fixed_river_median": np.median(aligned[mask]),
+            "depth_change_from_reference": np.median(aligned[mask] - reference[mask]),
+            "depth_alignment_scale": scale,
+            "depth_alignment_shift": shift,
+            "depth_image": image_path,
+            "depth_river_image": river_image_path,
+        }
+        rows.append(row)
+    return table.join(pd.DataFrame(rows, index=table.index))
 
 
 def add_dino(table, device):
@@ -133,7 +191,7 @@ def add_dino(table, device):
 
 
 def main():
-    table = pd.read_csv(INPUT_CSV)
+    table = pd.read_csv(INPUT_CSV).sort_values("image_timestamp").reset_index(drop=True)
     prompts = [(prompt, prompt) for prompt in SAM_PROMPTS]
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Processing {len(table)} images on {device}")

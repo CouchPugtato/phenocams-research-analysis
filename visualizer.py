@@ -10,7 +10,12 @@ from PIL import Image, ImageTk
 
 ROOT = Path(__file__).resolve().parent
 CSV_FILE = ROOT / "data/model_dataset.csv"
-OVERLAYS = {"None": "image_file", "SAM": "sam_image", "Depth": "depth_image"}
+OVERLAYS = {
+    "None": "image_file",
+    "SAM": "sam_image",
+    "Depth": "depth_image",
+    "Depth of River": "depth_river_image",
+}
 IMAGE_SIZE = (760, 650)
 
 
@@ -47,7 +52,7 @@ class Visualizer:
         self.position.pack(side="left", padx=12)
         ttk.Label(controls, text="Overlay:").pack(side="left", padx=(20, 4))
         self.overlay = tk.StringVar(value="None")
-        box = ttk.Combobox(controls, textvariable=self.overlay, values=list(OVERLAYS), width=10, state="readonly")
+        box = ttk.Combobox(controls, textvariable=self.overlay, values=list(OVERLAYS), width=15, state="readonly")
         box.pack(side="left")
         box.bind("<<ComboboxSelected>>", lambda _: self.show_image())
 
