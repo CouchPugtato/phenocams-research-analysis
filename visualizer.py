@@ -15,6 +15,8 @@ OVERLAYS = {
     "SAM": "sam_image",
     "Depth": "depth_image",
     "Depth of River": "depth_river_image",
+    "DINO": "dino_image",
+    "DINO River": "dino_river_image",
 }
 IMAGE_SIZE = (760, 650)
 
@@ -25,6 +27,7 @@ class Visualizer:
         self.data = pd.read_csv(CSV_FILE)
         if self.data.empty:
             raise ValueError(f"No rows found in {CSV_FILE}")
+        self.overlays = {name: column for name, column in OVERLAYS.items() if column in self.data}
         self.index = 0
         self.photo = None
         self.columns = [
@@ -52,7 +55,7 @@ class Visualizer:
         self.position.pack(side="left", padx=12)
         ttk.Label(controls, text="Overlay:").pack(side="left", padx=(20, 4))
         self.overlay = tk.StringVar(value="None")
-        box = ttk.Combobox(controls, textvariable=self.overlay, values=list(OVERLAYS), width=15, state="readonly")
+        box = ttk.Combobox(controls, textvariable=self.overlay, values=list(self.overlays), width=15, state="readonly")
         box.pack(side="left")
         box.bind("<<ComboboxSelected>>", lambda _: self.show_image())
 
@@ -96,7 +99,7 @@ class Visualizer:
         return path if path.is_absolute() else ROOT / path
 
     def show_image(self):
-        path = self.path_for(OVERLAYS[self.overlay.get()])
+        path = self.path_for(self.overlays[self.overlay.get()])
         if not path.exists():
             self.image_label.configure(image="", text=f"Missing image:\n{path}")
             self.photo = None

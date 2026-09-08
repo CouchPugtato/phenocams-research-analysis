@@ -1,6 +1,7 @@
 import gc
 import warnings
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import numpy as np
 import pandas as pd
@@ -8,7 +9,7 @@ import torch
 from PIL import Image, ImageDraw
 
 DEPTH_MODEL = "depth-anything/Depth-Anything-V2-Large-hf"
-DINO_MODEL = "facebook/dinov3-vith16plus-pretrain-lvd1689m"
+DINO_MODEL = "facebook/dinov3-vits16-pretrain-lvd1689m"
 
 INPUT_CSV = Path("data/dataset.csv")
 OUTPUT_CSV = Path("data/model_dataset.csv")
@@ -17,6 +18,12 @@ IMAGE_OUTPUT = Path("data/model_outputs")
 SAM_PROMPTS = ["river", "snow", "vegetation", "ground"]
 SAM_CONFIDENCE = 0.2
 COLORS = [(0, 130, 255), (255, 80, 200), (0, 220, 80), (255, 210, 0), (255, 80, 50)]
+DINO_SIZE = (896, 672)
+DINO_CLUSTERS = 10
+DINO_COLORS = [
+    (31, 119, 180), (255, 127, 14), (44, 160, 44), (214, 39, 40), (148, 103, 189),
+    (140, 86, 75), (227, 119, 194), (127, 127, 127), (188, 189, 34), (23, 190, 207),
+]
 
 warnings.filterwarnings(
     "ignore",
@@ -171,26 +178,104 @@ def add_depth(table, device, folder):
     return table.join(pd.DataFrame(rows, index=table.index))
 
 
-def add_dino(table, device):
+def add_dino(table, device, folder):
+    try:
+        from sklearn.cluster import MiniBatchKMeans
+    except ImportError as error:
+        raise SystemExit("Install DINO clustering with: python -m pip install scikit-learn") from error
     from transformers import AutoImageProcessor, AutoModel
 
     processor = AutoImageProcessor.from_pretrained(DINO_MODEL)
     model = AutoModel.from_pretrained(DINO_MODEL).to(device).eval()
-    rows = []
-    for number, (_, image) in enumerate(images(table), 1):
-        inputs = processor(images=image, return_tensors="pt").to(device)
-        with torch.inference_mode():
-            output = model(**inputs)
-            embedding = getattr(output, "pooler_output", None)
-            if embedding is None:
-                embedding = output.last_hidden_state.mean(dim=1)
-        rows.append(embedding[0].float().cpu().numpy())
-        print(f"DINOv3: {number}/{len(table)}")
+    grid = (DINO_SIZE[1] // 16, DINO_SIZE[0] // 16)
+    patch_count = grid[0] * grid[1]
+    palette = np.asarray(DINO_COLORS, dtype=np.uint8)
+    folder.mkdir(parents=True, exist_ok=True)
 
-    release(model)
-    features = pd.DataFrame(rows, index=table.index)
-    features.columns = [f"dino_{i:04d}" for i in range(features.shape[1])]
-    return table.join(features)
+    with TemporaryDirectory(prefix="dino_features_") as temporary:
+        feature_store = np.lib.format.open_memmap(
+            Path(temporary) / "features.npy",
+            mode="w+",
+            dtype=np.float32,
+            shape=(len(table) * patch_count, model.config.hidden_size),
+        )
+        records = []
+        for number, (source, image) in enumerate(images(table), 1):
+            inputs = processor(
+                images=image,
+                size={"height": DINO_SIZE[1], "width": DINO_SIZE[0]},
+                return_tensors="pt",
+            ).to(device)
+            with torch.inference_mode(), torch.autocast(
+                device_type=device, dtype=torch.bfloat16, enabled=device == "cuda"
+            ):
+                tokens = model(**inputs).last_hidden_state[0, -patch_count:]
+            features = torch.nn.functional.normalize(tokens.float(), dim=1).cpu().numpy()
+            start = (number - 1) * patch_count
+            feature_store[start:start + patch_count] = features
+            records.append((source, image.size, start))
+            print(f"DINOv3 features: {number}/{len(table)}")
+
+        feature_store.flush()
+        release(model)
+        clusters = MiniBatchKMeans(
+            n_clusters=DINO_CLUSTERS, batch_size=4096, n_init=3, random_state=0
+        ).fit(feature_store)
+        np.save(folder / "cluster_centers.npy", clusters.cluster_centers_)
+
+        rows = []
+        mask_file = table["sam_combined_river_mask"].iloc[0]
+        for number, (source, size, start) in enumerate(records, 1):
+            labels = clusters.predict(
+                feature_store[start:start + patch_count]
+            ).reshape(grid).astype(np.uint8)
+            label_map = np.asarray(
+                Image.fromarray(labels).resize(size, Image.Resampling.NEAREST)
+            )
+            with Image.open(source) as image:
+                gray = np.asarray(image.convert("L").convert("RGB"))
+            with Image.open(mask_file) as image:
+                river_mask = np.asarray(
+                    image.convert("L").resize(size, Image.Resampling.NEAREST)
+                ) > 0
+
+            colors = palette[label_map]
+            overlay = (.55 * gray + .45 * colors).astype(np.uint8)
+            map_path = folder / f"{source.stem}_clusters.png"
+            output_path = folder / f"{source.stem}_segments.png"
+            river_path = folder / f"{source.stem}_river_segments.png"
+            Image.fromarray(colors).save(map_path)
+            combined = Image.fromarray(overlay)
+            draw = ImageDraw.Draw(combined)
+            draw.rectangle((8, 8, 130, 16 + 20 * DINO_CLUSTERS), fill="black")
+            for i, color in enumerate(DINO_COLORS):
+                y = 14 + 20 * i
+                draw.rectangle((14, y, 26, y + 12), fill=color)
+                draw.text((32, y - 2), f"cluster {i}", fill="white")
+            combined.save(output_path)
+            Image.fromarray(np.where(river_mask[..., None], overlay, 0)).save(river_path)
+
+            full_counts = np.bincount(labels.ravel(), minlength=DINO_CLUSTERS) / labels.size
+            river_labels = label_map[river_mask]
+            river_counts = (
+                np.bincount(river_labels, minlength=DINO_CLUSTERS) / len(river_labels)
+                if len(river_labels) else np.full(DINO_CLUSTERS, np.nan)
+            )
+            row = {f"dino_cluster_{i}_coverage": full_counts[i] for i in range(DINO_CLUSTERS)}
+            row |= {
+                f"dino_river_cluster_{i}_coverage": river_counts[i]
+                for i in range(DINO_CLUSTERS)
+            }
+            row |= {
+                "dino_cluster_map": str(map_path),
+                "dino_image": str(output_path),
+                "dino_river_image": str(river_path),
+            }
+            rows.append(row)
+            print(f"DINOv3 clusters: {number}/{len(table)}")
+
+        del feature_store
+    return table.join(pd.DataFrame(rows, index=table.index))
 
 
 def main():
@@ -201,7 +286,7 @@ def main():
 
     table = add_sam3(table, prompts, device, IMAGE_OUTPUT / "sam3")
     table = add_depth(table, device, IMAGE_OUTPUT / "depth")
-    table = add_dino(table, device)
+    table = add_dino(table, device, IMAGE_OUTPUT / "dino")
     OUTPUT_CSV.parent.mkdir(parents=True, exist_ok=True)
     table.to_csv(OUTPUT_CSV, index=False)
     print(f"Saved {len(table)} rows to {OUTPUT_CSV}")
