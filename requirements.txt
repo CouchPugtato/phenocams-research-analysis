@@ -1,0 +1,23 @@
+# Reproduces the tested Windows/Python 3.12 environment.
+# The extra index supplies the CUDA 12.8 builds of PyTorch.
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+torch==2.10.0+cu128
+torchvision==0.25.0+cu128
+triton-windows==3.6.0.post26
+
+accelerate==1.14.0
+einops==0.8.2
+huggingface-hub==1.30.0
+matplotlib==3.11.1
+numpy==1.26.4
+opencv-python==4.11.0.86
+pandas==3.0.5
+pillow==12.3.0
+pycocotools==2.0.11
+requests==2.34.2
+sam3==0.1.0
+scikit-learn==1.9.0
+scipy==1.14.1
+timm==1.0.29
+transformers==5.16.1
