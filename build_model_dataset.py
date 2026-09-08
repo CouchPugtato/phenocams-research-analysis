@@ -90,7 +90,7 @@ def add_sam3(table, prompts, device, folder):
     release(model)
     if len({mask.shape for mask in river_masks}) != 1:
         raise ValueError("All images must have the same dimensions to combine their river masks")
-    combined_river = np.sum(river_masks, axis=0) > 0
+    combined_river = np.sum(river_masks, axis=0) >= 3
     combined_path = folder / "all_images_river_mask.png"
     Image.fromarray((combined_river * 255).astype(np.uint8)).save(combined_path)
     results["sam_combined_river_mask"] = [str(combined_path)] * len(table)
