@@ -103,10 +103,9 @@ def add_sam3(table, prompts, device, folder):
 
 def depth_stats(values, prefix):
     if not values.size:
-        return {f"{prefix}_{name}": np.nan for name in ("mean", "std", "p10", "median", "p90")}
+        return {f"{prefix}_{name}": np.nan for name in ("p10", "median", "p90")}
     q10, median, q90 = np.quantile(values, [.1, .5, .9])
     return {
-        f"{prefix}_mean": values.mean(), f"{prefix}_std": values.std(),
         f"{prefix}_p10": q10, f"{prefix}_median": median, f"{prefix}_p90": q90,
     }
 
@@ -115,12 +114,12 @@ def align_depth(values, reference, excluded):
     stable = ~excluded[::8, ::8]
     current, target = values[::8, ::8][stable], reference[::8, ::8][stable]
     if current.size < 100:
-        return values, 1.0, 0.0
+        return values
     current_q = np.quantile(current, [.25, .5, .75])
     target_q = np.quantile(target, [.25, .5, .75])
     scale = (target_q[2] - target_q[0]) / max(current_q[2] - current_q[0], 1e-8)
     shift = target_q[1] - scale * current_q[1]
-    return scale * values + shift, scale, shift
+    return scale * values + shift
 
 
 def add_depth(table, device, folder):
@@ -157,13 +156,10 @@ def add_depth(table, device, folder):
 
     rows = []
     for values, mask, image_path, river_image_path in zip(depth_maps, masks, image_paths, river_image_paths):
-        aligned, scale, shift = align_depth(values, reference, mask)
+        aligned = align_depth(values, reference, mask)
         row = depth_stats(values.ravel(), "depth")
         row |= depth_stats(aligned[mask], "depth_river")
         row |= {
-            "depth_fixed_river_median": np.median(aligned[mask]),
-            "depth_alignment_scale": scale,
-            "depth_alignment_shift": shift,
             "depth_image": image_path,
             "depth_river_image": river_image_path,
         }
