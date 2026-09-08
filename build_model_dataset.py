@@ -13,6 +13,7 @@ INPUT_CSV = Path("data/dataset.csv")
 OUTPUT_CSV = Path("data/model_dataset.csv")
 IMAGE_OUTPUT = Path("data/model_outputs")
 SAM_PROMPTS = ["river", "snow", "vegetation", "sky", "ground"]
+SAM_CONFIDENCE = 0.2
 COLORS = [(0, 130, 255), (255, 80, 200), (0, 220, 80), (255, 210, 0), (255, 80, 50)]
 
 
@@ -43,7 +44,7 @@ def add_sam3(table, prompts, device, folder):
     model = build_sam3_image_model(
         device=device, checkpoint_path=checkpoint, load_from_HF=False
     )
-    processor = Sam3Processor(model)
+    processor = Sam3Processor(model, confidence_threshold=SAM_CONFIDENCE)
     results = {f"sam_{key}_count": [] for _, key in prompts}
     results |= {f"sam_{key}_coverage": [] for _, key in prompts}
     results |= {f"sam_{key}_score": [] for _, key in prompts}
