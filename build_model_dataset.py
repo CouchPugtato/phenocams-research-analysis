@@ -6,8 +6,9 @@ import pandas as pd
 import torch
 from PIL import Image, ImageDraw
 
-DEPTH_MODEL = "depth-anything/Depth-Anything-V2-Small-hf"
-DINO_MODEL = "facebook/dinov3-convnext-tiny-pretrain-lvd1689m"
+SAM_VERSION = "sam3.1"
+DEPTH_MODEL = "depth-anything/Depth-Anything-V2-Large-hf"
+DINO_MODEL = "facebook/dinov3-vith16plus-pretrain-lvd1689m"
 INPUT_CSV = Path("data/dataset.csv")
 OUTPUT_CSV = Path("data/model_dataset.csv")
 IMAGE_OUTPUT = Path("data/model_outputs")
@@ -34,11 +35,14 @@ def release(model):
 def add_sam3(table, prompts, device, folder):
     try:
         from sam3.model.sam3_image_processor import Sam3Processor
-        from sam3.model_builder import build_sam3_image_model
+        from sam3.model_builder import build_sam3_image_model, download_ckpt_from_hf
     except ImportError as error:
         raise SystemExit("SAM 3 is not installed") from error
 
-    model = build_sam3_image_model(device=device)
+    checkpoint = download_ckpt_from_hf(version=SAM_VERSION)
+    model = build_sam3_image_model(
+        device=device, checkpoint_path=checkpoint, load_from_HF=False
+    )
     processor = Sam3Processor(model)
     results = {f"sam_{key}_count": [] for _, key in prompts}
     results |= {f"sam_{key}_coverage": [] for _, key in prompts}
