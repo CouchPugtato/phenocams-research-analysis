@@ -14,6 +14,15 @@ NEON_API = "https://data.neonscience.org/api/v0/data/query"
 TIMEOUT = 120
 
 
+def load_env():
+    path = Path(__file__).with_name(".env")
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            key, separator, value = line.partition("=")
+            if separator and key.strip() and not key.lstrip().startswith("#"):
+                os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+
+
 def date(value):
     try:
         return datetime.strptime(value, "%m/%d/%Y")
@@ -81,6 +90,7 @@ def download_discharge(session, token, start, end):
 
 
 def main():
+    load_env()
     parser = argparse.ArgumentParser()
     parser.add_argument("start_date", type=date, help="MM/DD/YYYY")
     parser.add_argument("end_date", type=date, help="MM/DD/YYYY")
@@ -88,7 +98,7 @@ def main():
     args = parser.parse_args()
     if args.start_date > args.end_date or args.interval < 1:
         parser.error("backwards dates or negative interval")
-    token = os.getenv("NEON_token")
+    token = os.getenv("NEON_TOKEN")
     if not token:
         parser.error("couldn't find NEON token in env")
 
