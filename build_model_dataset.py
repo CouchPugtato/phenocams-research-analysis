@@ -15,11 +15,11 @@ INPUT_CSV = Path("data/dataset.csv")
 OUTPUT_CSV = Path("data/model_dataset.csv")
 IMAGE_OUTPUT = Path("data/model_outputs")
 
-SAM_PROMPTS = ["river", "snow", "vegetation", "ground"]
+SAM_PROMPTS = ["river", "snow", "trees"]
 SAM_CONFIDENCE = 0.2
 COLORS = [(0, 130, 255), (255, 80, 200), (0, 220, 80), (255, 210, 0), (255, 80, 50)]
 DINO_SIZE = (896, 672)
-DINO_CLUSTERS = 10
+DINO_CLUSTERS = 3
 DINO_COLORS = [
     (31, 119, 180), (255, 127, 14), (44, 160, 44), (214, 39, 40), (148, 103, 189),
     (140, 86, 75), (227, 119, 194), (127, 127, 127), (188, 189, 34), (23, 190, 207),
@@ -110,10 +110,10 @@ def add_sam3(table, prompts, device, folder):
 
 def depth_stats(values, prefix):
     if not values.size:
-        return {f"{prefix}_{name}": np.nan for name in ("p10", "median", "p90")}
-    q10, median, q90 = np.quantile(values, [.1, .5, .9])
+        return {f"{prefix}_{name}": np.nan for name in ("q1", "median", "q4")}
+    q1, median, q4 = np.quantile(values, [.25, .5, .75])
     return {
-        f"{prefix}_p10": q10, f"{prefix}_median": median, f"{prefix}_p90": q90,
+        f"{prefix}_q1": q1, f"{prefix}_median": median, f"{prefix}_q4": q4,
     }
 
 
